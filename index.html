@@ -2003,10 +2003,19 @@ function TicketsList({ tickets, queues, agents, approvers, onOpen }) {
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterPrio,   setFilterPrio]   = useState('all');
   const [filterQueue,  setFilterQueue]  = useState('all');
+  const [filterRequester, setFilterRequester] = useState('all');
+
+  // Lista de solicitantes únicos (ordenada)
+  const requesters = Array.from(new Set(tickets.map(t => t.requester).filter(Boolean)))
+    .sort((a,b) => a.localeCompare(b,'pt-BR'));
+  // Filas ordenadas alfabeticamente
+  const sortedQueues = queues.slice().sort((a,b) => a.name.localeCompare(b.name,'pt-BR'));
+
   const filtered = tickets.filter(t =>
     (filterStatus==='all'||t.status===filterStatus) &&
     (filterPrio  ==='all'||t.priority===filterPrio) &&
-    (filterQueue ==='all'||t.queue===filterQueue)
+    (filterQueue ==='all'||t.queue===filterQueue) &&
+    (filterRequester==='all'||t.requester===filterRequester)
   );
   return (
     <>
@@ -2021,7 +2030,11 @@ function TicketsList({ tickets, queues, agents, approvers, onOpen }) {
         </select>
         <select className="form-select" style={{width:'auto'}} value={filterQueue} onChange={e=>setFilterQueue(e.target.value)}>
           <option value="all">Todas as filas</option>
-          {queues.map(q=><option key={q.id} value={q.id}>{q.name}</option>)}
+          {sortedQueues.map(q=><option key={q.id} value={q.id}>{q.name}</option>)}
+        </select>
+        <select className="form-select" style={{width:'auto',maxWidth:240}} value={filterRequester} onChange={e=>setFilterRequester(e.target.value)}>
+          <option value="all">Todos os solicitantes</option>
+          {requesters.map(r=><option key={r} value={r}>{r}</option>)}
         </select>
         <div style={{marginLeft:'auto',color:'var(--muted)',fontSize:13,alignSelf:'center'}}>{filtered.length} ticket(s)</div>
       </div>
@@ -2411,7 +2424,7 @@ function TicketDetail({ ticket, queues, agents, approvers, users, currentUser, i
                 <div className="form-group" style={{marginBottom:0}}>
                   <label className="form-label" style={{fontSize:11}}>Fila de destino</label>
                   <select className="form-select" style={{fontSize:12.5}} value={transferQueue} onChange={e=>setTransferQueue(e.target.value)}>
-                    {queues.map(qq=>(
+                    {queues.slice().sort((a,b)=>a.name.localeCompare(b.name,'pt-BR')).map(qq=>(
                       <option key={qq.id} value={qq.id}>{qq.name}</option>
                     ))}
                   </select>
@@ -3571,13 +3584,14 @@ function NewTicketModal({ queues, agents, areas, currentUser, onClose, onSave })
   };
 
   // Filas filtradas pela área selecionada
-  const filteredQueues = !hasAreas
+  const filteredQueues = (!hasAreas
     ? queues
     : selectedArea === '__none__'
       ? queues.filter(q => !q.area)
       : selectedArea
         ? queues.filter(q => q.area === selectedArea)
-        : [];
+        : []
+  ).slice().sort((a,b) => a.name.localeCompare(b.name,'pt-BR'));
 
   const handleAreaChange = (areaId) => {
     setSelectedArea(areaId);
@@ -3616,7 +3630,7 @@ function NewTicketModal({ queues, agents, areas, currentUser, onClose, onSave })
             <div className="form-group"><label className="form-label">Fila *</label>
               <select className="form-select" value={form.queue} onChange={e=>setForm(f=>({...f,queue:e.target.value,agent:'',checklist:[]}))}>
                 <option value="">Selecione a fila</option>
-                {queues.map(q=><option key={q.id} value={q.id}>{q.name} · SLA {q.sla}h</option>)}
+                {filteredQueues.map(q=><option key={q.id} value={q.id}>{q.name} · SLA {q.sla}h</option>)}
               </select>
             </div>
           )}
