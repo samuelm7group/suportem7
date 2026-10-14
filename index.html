@@ -11,7 +11,6 @@
   <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js" crossorigin></script>
-  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1062,25 +1061,78 @@ function mapSettings(s) {
     autoAssign: s.auto_assign, slaAlert: s.sla_alert,
     emailNotify: s.email_notify, closedFeedback: s.closed_feedback,
     maxFileSize: String(s.max_file_size || 10),
-    ejsPublicKey: s.ejs_public_key || '', ejsServiceId: s.ejs_service_id || '',
-    ejsTicketTpl: s.ejs_ticket_tpl || '', ejsStatusTpl: s.ejs_status_tpl || '',
-    ejsUserTpl: s.ejs_user_tpl || '', ejsApprovalTpl: s.ejs_approval_tpl || '',
-    ejsEnabled: s.ejs_enabled || false,
+    emailEnabled: s.email_enabled !== false,
   };
 }
 
 // ─── EMAIL HELPER ─────────────────────────────────────────────────
-function sendEmail(settings, templateId, params) {
-  if (!settings.ejsEnabled || !settings.ejsPublicKey || !settings.ejsServiceId || !templateId) return;
-  try {
-    emailjs.init({ publicKey: settings.ejsPublicKey });
-    emailjs.send(settings.ejsServiceId, templateId, {
-      app_name: settings.appName || 'DeskFlow',
-      company: settings.companyName,
-      support_email: settings.supportEmail,
-      ...params,
-    }).catch(err => console.warn('EmailJS error:', err));
-  } catch(e) { console.warn('EmailJS not ready:', e); }
+// Envia e-mail via Microsoft Graph (Supabase Edge Function "send-email")
+// kind identifica o tipo para montar o assunto/corpo corretos.
+function sendEmail(settings, kind, params) {
+  if (settings.emailEnabled === false) return;      // permite desligar notificações
+  if (!params || !params.to_email) return;
+  const app = settings.appName || 'M7 Service Desk';
+  const brand = '#e6401b';
+
+  // monta assunto e corpo conforme o tipo
+  let subject = '', bodyInner = '';
+  if (kind === 'ticket') {
+    subject = `[${app}] Novo ticket ${params.ticket_id}: ${params.ticket_title}`;
+    bodyInner = `
+      <p>Olá ${params.to_name || ''},</p>
+      <p>Seu ticket foi registrado com sucesso.</p>
+      <table style="border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Número</td><td><b>${params.ticket_id}</b></td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Título</td><td>${params.ticket_title}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Fila</td><td>${params.queue_name || '—'}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Prioridade</td><td>${params.priority || '—'}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Status</td><td>${params.status || '—'}</td></tr>
+      </table>`;
+  } else if (kind === 'status') {
+    subject = `[${app}] Ticket ${params.ticket_id} atualizado`;
+    bodyInner = `
+      <p>Olá ${params.to_name || ''},</p>
+      <p>O status do seu ticket <b>${params.ticket_id} — ${params.ticket_title}</b> foi alterado para <b>${params.status}</b>.</p>`;
+  } else if (kind === 'approval') {
+    subject = `[${app}] Aprovação do ticket ${params.ticket_id}: ${params.decision}`;
+    bodyInner = `
+      <p>Olá ${params.to_name || ''},</p>
+      <p>O ticket <b>${params.ticket_id} — ${params.ticket_title}</b> teve uma decisão de aprovação:</p>
+      <p style="font-size:16px"><b>${params.decision}</b></p>
+      <p>Responsável: ${params.approver_name || '—'}<br>Observação: ${params.note || 'Sem observações.'}</p>`;
+  } else if (kind === 'user') {
+    subject = `[${app}] Sua conta foi criada`;
+    bodyInner = `
+      <p>Olá ${params.to_name || ''},</p>
+      <p>Sua conta no ${app} foi criada.</p>
+      <table style="border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:4px 12px 4px 0;color:#666">E-mail</td><td><b>${params.to_email}</b></td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Senha</td><td><b>${params.password || '(definida pelo admin)'}</b></td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666">Perfil</td><td>${params.role || '—'}</td></tr>
+      </table>
+      <p>Recomendamos trocar sua senha no primeiro acesso.</p>`;
+  } else {
+    subject = `[${app}] Notificação`;
+    bodyInner = `<p>${params.message || 'Você tem uma nova notificação.'}</p>`;
+  }
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;border:1px solid #eee;border-radius:10px;overflow:hidden">
+      <div style="background:${brand};color:#fff;padding:16px 22px;font-size:18px;font-weight:bold">${app}</div>
+      <div style="padding:22px;color:#222;line-height:1.6">${bodyInner}
+        <p style="margin-top:22px;font-size:12px;color:#999">Este é um e-mail automático, por favor não responda.</p>
+      </div>
+    </div>`;
+
+  // chama a Edge Function
+  const url = `${SUPA_URL}/functions/v1/send-email`;
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPA_KEY}`, 'apikey': SUPA_KEY },
+    body: JSON.stringify({ to: params.to_email, subject, html }),
+  }).then(r => r.json()).then(d => {
+    if (!d.success) console.warn('Email não enviado:', d);
+  }).catch(err => console.warn('Erro ao enviar e-mail:', err));
 }
 
 // ─── TOAST ───────────────────────────────────────────────────────
@@ -1362,9 +1414,9 @@ function App() {
     // e-mail mudança de status
     if (patch.status) {
       const tk = tickets.find(t => t.id === id);
-      if (tk && patch.status !== tk.status && settings.ejsStatusTpl) {
+      if (tk && patch.status !== tk.status) {
         const ag = agents.find(a => a.id === (patch.agent !== undefined ? patch.agent : tk.agent));
-        sendEmail(settings, settings.ejsStatusTpl, {
+        sendEmail(settings, 'status', {
           to_email: tk.requester, to_name: tk.requester.split('@')[0],
           ticket_id: tk.id, ticket_title: tk.title,
           old_status: STATUS_LABELS[tk.status], new_status: STATUS_LABELS[patch.status],
@@ -1430,9 +1482,9 @@ function App() {
       await supa.insert('tickets', dbRow);
       const newTicket = { ...mapTicket({ ...dbRow, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }), comments: [] };
       setTickets(ts => [newTicket, ...ts]);
-      if (settings.ejsTicketTpl) {
+      if (true) {
         const ag = agents.find(a => a.id === data.agent);
-        sendEmail(settings, settings.ejsTicketTpl, {
+        sendEmail(settings, 'ticket', {
           to_email: data.requester, to_name: data.requester.split('@')[0],
           ticket_id: id, ticket_title: data.title, ticket_desc: data.desc || '',
           queue_name: q?.name || '', priority: PRIO_LABELS[data.priority] || data.priority,
@@ -1563,9 +1615,9 @@ function App() {
           currentApprover: chain[nextIdx].approverId, approvalLevel: nextIdx + 1 };
     await updateTicket(id, patch);
 
-    if (settings.ejsApprovalTpl) {
+    if (true) {
       const nextApprover = isFinal ? null : users.find(u => u.id === chain[nextIdx].approverId);
-      sendEmail(settings, settings.ejsApprovalTpl, {
+      sendEmail(settings, 'approval', {
         to_email: tk.requester, to_name: tk.requester.split('@')[0],
         ticket_id: tk.id, ticket_title: tk.title,
         decision: isFinal ? 'APROVADO ✓ (final)' : `APROVADO no nível ${idx+1} ✓ — segue para ${nextApprover?.name||'próximo gestor'}`,
@@ -1593,8 +1645,8 @@ function App() {
       approvalChain: chain, approvalStatus: 'rejected', status: 'cancelled', currentApprover: null,
       approvedBy: chain[0]?.approverId, approvalNote: note,
     });
-    if (settings.ejsApprovalTpl) {
-      sendEmail(settings, settings.ejsApprovalTpl, {
+    if (true) {
+      sendEmail(settings, 'approval', {
         to_email: tk.requester, to_name: tk.requester.split('@')[0],
         ticket_id: tk.id, ticket_title: tk.title,
         decision: 'REJEITADO ✕', approver_name: decidedBy, note: note || 'Sem observações.',
@@ -1610,10 +1662,7 @@ function App() {
       auto_assign: newSettings.autoAssign, sla_alert: newSettings.slaAlert,
       email_notify: newSettings.emailNotify, closed_feedback: newSettings.closedFeedback,
       max_file_size: parseInt(newSettings.maxFileSize) || 10,
-      ejs_public_key: newSettings.ejsPublicKey, ejs_service_id: newSettings.ejsServiceId,
-      ejs_ticket_tpl: newSettings.ejsTicketTpl, ejs_status_tpl: newSettings.ejsStatusTpl,
-      ejs_user_tpl: newSettings.ejsUserTpl, ejs_approval_tpl: newSettings.ejsApprovalTpl,
-      ejs_enabled: newSettings.ejsEnabled,
+      email_enabled: newSettings.emailEnabled !== false,
     };
     try {
       await supa.update('settings', 'id=eq.1', dbRow);
@@ -1732,8 +1781,8 @@ function App() {
     try {
       await supa.insert('users', dbRow);
       setUsers(us => [...us, mapUser(dbRow)]);
-      if (settings.ejsUserTpl) {
-        sendEmail(settings, settings.ejsUserTpl, {
+      if (true) {
+        sendEmail(settings, 'user', {
           to_email: data.email, to_name: data.name,
           user_role: ROLE_LABELS[data.role], user_email: data.email,
           user_password: data.password, login_url: window.location.href,
@@ -3449,44 +3498,29 @@ function SettingsView({ settings, onSave, queues, onAddQueue, onRemoveQueue, onU
         {tab==='email' && (
           <>
             <div className="settings-section">
-              <div className="settings-section-title">Status do EmailJS</div>
+              <div className="settings-section-title">Notificações por E-mail</div>
               <div className="settings-row">
                 <div className="settings-row-info">
                   <div className="settings-row-label">Ativar disparo de e-mails</div>
-                  <div className="settings-row-desc">{local.ejsEnabled&&local.ejsPublicKey&&local.ejsServiceId?'✓ Configurado e ativo':'Configure as credenciais abaixo para ativar'}</div>
+                  <div className="settings-row-desc">Envia notificações automáticas de tickets, status e aprovações.</div>
                 </div>
-                <button className={`toggle ${local.ejsEnabled?'on':''}`} onClick={()=>upd('ejsEnabled',!local.ejsEnabled)} />
+                <button className={`toggle ${local.emailEnabled!==false?'on':''}`} onClick={()=>upd('emailEnabled',local.emailEnabled===false)} />
               </div>
-            </div>
-            <div className="settings-section">
-              <div className="settings-section-title">Credenciais EmailJS <a href="https://dashboard.emailjs.com" target="_blank" rel="noreferrer" style={{fontSize:11,color:'var(--accent)',marginLeft:12,fontWeight:400,textDecoration:'none'}}>→ Abrir dashboard ↗</a></div>
-              {[
-                {key:'ejsPublicKey',label:'Chave Pública (Public Key)',placeholder:'user_AbCdEf…',desc:'Em Account → API Keys'},
-                {key:'ejsServiceId',label:'Service ID',placeholder:'service_xxxxxxx',desc:'Em Email Services'},
-              ].map(f=>(
-                <div key={f.key} className="settings-row">
-                  <div className="settings-row-info"><div className="settings-row-label">{f.label}</div><div className="settings-row-desc">{f.desc}</div></div>
-                  <input className="form-input" style={{width:260}} value={local[f.key]||''} onChange={e=>upd(f.key,e.target.value)} placeholder={f.placeholder} />
-                </div>
-              ))}
-            </div>
-            <div className="settings-section">
-              <div className="settings-section-title">Template IDs</div>
-              {[
-                {key:'ejsTicketTpl',   label:'Novo Ticket criado',       vars:'{{ticket_id}}, {{ticket_title}}, {{ticket_desc}}, {{queue_name}}, {{priority}}, {{status}}, {{agent_name}}, {{to_name}}, {{to_email}}'},
-                {key:'ejsStatusTpl',   label:'Mudança de Status',         vars:'{{ticket_id}}, {{ticket_title}}, {{old_status}}, {{new_status}}, {{agent_name}}, {{to_name}}, {{to_email}}'},
-                {key:'ejsApprovalTpl', label:'Decisão de Aprovação',      vars:'{{ticket_id}}, {{ticket_title}}, {{decision}}, {{approver_name}}, {{note}}, {{to_name}}, {{to_email}}'},
-                {key:'ejsUserTpl',     label:'Boas-vindas — Novo Usuário',vars:'{{to_name}}, {{to_email}}, {{user_email}}, {{user_password}}, {{user_role}}, {{login_url}}'},
-              ].map(f=>(
-                <div key={f.key} className="settings-row" style={{flexDirection:'column',alignItems:'flex-start',gap:8}}>
-                  <div style={{display:'flex',alignItems:'center',gap:12,width:'100%'}}>
-                    <div className="settings-row-info"><div className="settings-row-label">{f.label}</div></div>
-                    <input className="form-input" style={{width:240}} value={local[f.key]||''} onChange={e=>upd(f.key,e.target.value)} placeholder="template_xxxxxxx" />
-                  </div>
-                  <div style={{fontSize:11,color:'var(--muted)',background:'var(--surface2)',borderRadius:6,padding:'6px 10px',width:'100%'}}><strong style={{color:'var(--text)'}}>Variáveis:</strong> {f.vars}</div>
-                </div>
-              ))}
               <div className="settings-row"><div style={{flex:1}} /><button className="btn btn-primary" onClick={()=>onSave(local)}>Salvar</button></div>
+            </div>
+            <div className="settings-section">
+              <div className="settings-section-title">Provedor: Microsoft 365</div>
+              <div style={{padding:'16px 22px',fontSize:13,color:'var(--muted)',lineHeight:1.8}}>
+                Os e-mails são enviados pela <strong style={{color:'var(--text)'}}>Microsoft Graph API</strong>, direto do remetente <strong style={{color:'var(--accent)'}}>naoresponda@m7groupbr.com</strong>, através de uma função segura no Supabase.
+                <div style={{marginTop:12,padding:'12px 14px',background:'var(--surface2)',borderRadius:8,fontSize:12.5}}>
+                  <div style={{fontWeight:700,color:'var(--text)',marginBottom:6}}>Tipos de e-mail enviados automaticamente:</div>
+                  • Novo ticket criado (confirmação ao solicitante)<br/>
+                  • Mudança de status do ticket<br/>
+                  • Decisão de aprovação (aprovado/rejeitado)<br/>
+                  • Boas-vindas a novos usuários
+                </div>
+                <div style={{marginTop:10,fontSize:11.5}}>As credenciais (Tenant, Client ID e Secret) ficam protegidas nos <strong style={{color:'var(--text)'}}>Secrets do Supabase</strong>, não no navegador. Para alterá-las, acesse Edge Functions → Secrets no painel do Supabase.</div>
+              </div>
             </div>
           </>
         )}
