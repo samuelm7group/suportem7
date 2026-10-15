@@ -1697,6 +1697,55 @@ function App() {
     } catch(e) { show('Erro ao substituir aprovador: ' + e.message, 'error'); }
   };
 
+  // Envia um chamado JÁ EXISTENTE para aprovação, montando a cadeia conforme a fila atual.
+  // Usado quando a fila não exigia aprovação na criação e passou a exigir depois.
+  const sendToApproval = async (ticket) => {
+    const tk = tickets.find(t => t.id === ticket.id);
+    if (!tk) return;
+    const q = queues.find(q => q.id === tk.queue);
+    if (!q || !q.requiresApproval) { show('A fila deste chamado não exige aprovação.', 'error'); return; }
+
+    // monta a cadeia do mesmo jeito que na criação
+    let chain = [];
+    if (Array.isArray(q.approvalFlow) && q.approvalFlow.length > 0) {
+      chain = resolveCustomFlow(tk.requester, q.approvalFlow, users);
+    } else {
+      chain = resolveApprovalChain(tk.requester, q.approvalLevels || 1, users);
+    }
+
+    if (chain.length === 0) {
+      show('Não foi possível montar a cadeia (solicitante sem gestor ou aprovadores). Verifique o cadastro.', 'error');
+      return;
+    }
+
+    const author = currentUser?.name || 'Sistema';
+    const chainNames = chain.map(c => c.approverName).join(' → ');
+    const body = `✦ ENVIADO PARA APROVAÇÃO por ${author}\nCadeia: ${chainNames}`;
+
+    try {
+      await supa.update('tickets', `id=eq.${tk.id}`, {
+        approval_status: 'pending', status: 'awaiting_approval',
+        approval_chain: chain, current_approver: chain[0].approverId,
+        approval_level: 1, updated_at: new Date().toISOString(),
+      });
+      await supa.insert('comments', { ticket_id: tk.id, author, body, attachments: [] });
+      const comment = { author, date: new Date().toISOString(), text: body, attachments: [], isSentApproval: true };
+      const patch = { approvalStatus: 'pending', status: 'awaiting_approval', approvalChain: chain, currentApprover: chain[0].approverId, approvalLevel: 1 };
+      setTickets(ts => ts.map(t => t.id === tk.id ? { ...t, ...patch, comments: [...t.comments, comment], updated: new Date().toISOString() } : t));
+      if (selectedTicket?.id === tk.id) setSelectedTicket(t => ({ ...t, ...patch, comments: [...t.comments, comment] }));
+      // notifica o 1º aprovador
+      const firstApprover = users.find(u => u.id === chain[0].approverId);
+      if (firstApprover?.email) {
+        sendEmail(settings, 'approval', {
+          to_email: firstApprover.email, to_name: firstApprover.name.split(' ')[0],
+          ticket_id: tk.id, ticket_title: tk.title,
+          decision: 'APROVAÇÃO PENDENTE', approver_name: author, note: 'Chamado enviado para sua aprovação.',
+        });
+      }
+      show(`Chamado enviado para aprovação de ${firstApprover?.name || 'aprovador'}!`);
+    } catch(e) { show('Erro ao enviar para aprovação: ' + e.message, 'error'); }
+  };
+
   const saveSettings = async (newSettings) => {
     const dbRow = {
       company_name: newSettings.companyName, support_email: newSettings.supportEmail,
@@ -2004,7 +2053,7 @@ function App() {
         <div className="page">
           {page==='dashboard'     && <Dashboard stats={stats} tickets={visibleTickets} queues={visibleQueues} approvers={approvers} onOpenTicket={openTicket} />}
           {page==='tickets'       && <TicketsList tickets={filteredTickets} queues={queues} agents={agents} approvers={approvers} onOpen={openTicket} />}
-          {page==='ticket-detail' && selectedTicket && <TicketDetail ticket={selectedTicket} queues={queues} agents={agents} approvers={approvers} eligibleApprovers={eligibleApprovers} users={users} currentUser={currentUser} isAdmin={isAdmin} isQueueAdmin={isQueueAdmin} onUpdate={updateTicket} onComment={addComment} onApprove={approveTicket} onReject={rejectTicket} onTransfer={transferTicket} onReopen={reopenTicket} onCancel={cancelTicket} onReassignApprover={reassignApprover} onBack={() => setPage('tickets')} show={show} />}
+          {page==='ticket-detail' && selectedTicket && <TicketDetail ticket={selectedTicket} queues={queues} agents={agents} approvers={approvers} eligibleApprovers={eligibleApprovers} users={users} currentUser={currentUser} isAdmin={isAdmin} isQueueAdmin={isQueueAdmin} onUpdate={updateTicket} onComment={addComment} onApprove={approveTicket} onReject={rejectTicket} onTransfer={transferTicket} onReopen={reopenTicket} onCancel={cancelTicket} onReassignApprover={reassignApprover} onSendToApproval={sendToApproval} onBack={() => setPage('tickets')} show={show} />}
           {page==='approvals'     && <ApprovalsView tickets={tickets} queues={queues} agents={agents} approvers={approvers} users={users} currentUser={currentUser} isAdmin={isAdmin} onOpenTicket={openTicket} onApprove={approveTicket} onReject={rejectTicket} />}
           {page==='reports'       && isAdmin && <ReportsView tickets={tickets} queues={queues} areas={areas} agents={agents} approvers={approvers} />}
           {page==='queues'        && <QueuesView tickets={visibleTickets} queues={visibleQueues} agents={agents} approvers={approvers} eligibleApprovers={eligibleApprovers} areas={areas} onOpenTicket={openTicket} canManage={isAdmin || isQueueAdmin} onUpdateQueue={updateQueue} onAddQueue={addQueue} myScopeQueueIds={myScopeQueueIds} isFullAdmin={isAdmin} currentUser={currentUser} />}
@@ -2163,7 +2212,7 @@ function TicketsList({ tickets, queues, agents, approvers, onOpen }) {
 }
 
 // ─── TICKET DETAIL ───────────────────────────────────────────────
-function TicketDetail({ ticket, queues, agents, approvers, eligibleApprovers, users, currentUser, isAdmin, isQueueAdmin, onUpdate, onComment, onApprove, onReject, onTransfer, onReopen, onCancel, onReassignApprover, onBack }) {
+function TicketDetail({ ticket, queues, agents, approvers, eligibleApprovers, users, currentUser, isAdmin, isQueueAdmin, onUpdate, onComment, onApprove, onReject, onTransfer, onReopen, onCancel, onReassignApprover, onSendToApproval, onBack }) {
   const [comment, setComment] = useState('');
   const [commentFiles, setCommentFiles] = useState([]);
   const [sendingComment, setSendingComment] = useState(false);
@@ -2364,6 +2413,20 @@ function TicketDetail({ ticket, queues, agents, approvers, eligibleApprovers, us
                 const isReopen = c.isReopen || (c.text && c.text.startsWith('↩ REABERTURA'));
                 const isCancel = c.isCancel || (c.text && c.text.startsWith('🚫 CANCELAMENTO'));
                 const isReassign = c.isReassign || (c.text && c.text.startsWith('🔁 SUBSTITUIÇÃO'));
+                const isSentApproval = c.isSentApproval || (c.text && c.text.startsWith('✦ ENVIADO PARA APROVAÇÃO'));
+                if (isSentApproval) {
+                  return (
+                    <div key={i} style={{marginBottom:10,padding:'10px 14px',background:'rgba(255,157,92,0.1)',border:'1px solid rgba(255,157,92,0.3)',borderRadius:10}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                        <span style={{fontSize:14}}>✦</span>
+                        <span style={{fontSize:12,fontWeight:700,color:'#ff9d5c'}}>Enviado para aprovação</span>
+                        <span style={{fontSize:11,color:'var(--muted)',marginLeft:'auto'}}>{fmtDate(c.date)}</span>
+                      </div>
+                      <div style={{fontSize:12.5,color:'var(--text)',lineHeight:1.6,whiteSpace:'pre-line',paddingLeft:22}}>{c.text.replace(/^✦ ENVIADO PARA APROVAÇÃO[^\n]*\n?/,'')}</div>
+                      <div style={{fontSize:11,color:'var(--muted)',paddingLeft:22,marginTop:3}}>por {c.author}</div>
+                    </div>
+                  );
+                }
                 if (isReassign) {
                   return (
                     <div key={i} style={{marginBottom:10,padding:'10px 14px',background:'rgba(230,64,27,0.07)',border:'1px solid rgba(230,64,27,0.22)',borderRadius:10}}>
@@ -2518,6 +2581,12 @@ function TicketDetail({ ticket, queues, agents, approvers, eligibleApprovers, us
                 {['open','pending','resolved','closed'].map(s=>(
                   <button key={s} className={`btn ${ticket.status===s?'btn-primary':'btn-ghost'} btn-sm`} style={{justifyContent:'center'}} onClick={()=>onUpdate(ticket.id,{status:s})}>{STATUS_LABELS[s]}</button>
                 ))}
+                {/* Enviar para aprovação: fila exige aprovação, chamado ainda sem aprovação e aberto/em andamento */}
+                {canManageApprovers && q && q.requiresApproval && !ticket.approvalStatus && (ticket.status==='open'||ticket.status==='pending') && (
+                  <button className="btn btn-sm" style={{justifyContent:'center',marginTop:4,background:'#ff9d5c',color:'#1a1a1a',fontWeight:600}} onClick={()=>{if(confirm('Enviar este chamado para aprovação? A cadeia será montada conforme a fila está configurada agora.'))onSendToApproval(ticket);}}>
+                    ✦ Enviar para aprovação
+                  </button>
+                )}
                 {!isRequester && (
                   <button className="btn btn-ghost btn-sm" style={{justifyContent:'center',marginTop:4,borderColor:'var(--accent)',color:'var(--accent)'}} onClick={()=>{setShowTransfer(v=>!v); setTransferQueue(ticket.queue); setTransferAgent(ticket.agent||'');}}>
                     🔄 Transferir chamado
