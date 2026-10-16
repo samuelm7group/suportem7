@@ -2275,7 +2275,7 @@ function TicketDetail({ ticket, queues, agents, approvers, eligibleApprovers, us
       if (f.size > 10*1024*1024) { alert(`"${f.name}" excede 10MB e foi ignorado.`); return false; }
       return true;
     });
-    setCommentFiles(prev => [...prev, ...incoming].slice(0, 5));
+    setCommentFiles(prev => [...prev, ...incoming]);
   };
   const cmtFileIcon = (type) => !type ? '📎' : type.startsWith('image/') ? '🖼️' : type.includes('pdf') ? '📄' : type.includes('sheet')||type.includes('excel')||type.includes('csv') ? '📊' : type.includes('word')||type.includes('document') ? '📝' : '📎';
 
@@ -3742,7 +3742,7 @@ function NewTicketModal({ queues, agents, areas, currentUser, onClose, onSave })
       }
       valid.push(f);
     }
-    setFiles(prev => [...prev, ...valid].slice(0, 5)); // máx 5 anexos
+    setFiles(prev => [...prev, ...valid]); // sem limite de quantidade
   };
   const removeFile = (idx) => setFiles(prev => prev.filter((_, i) => i !== idx));
   const fileIcon = (type) => {
@@ -3938,7 +3938,7 @@ function NewTicketModal({ queues, agents, areas, currentUser, onClose, onSave })
             >
               <div style={{fontSize:24,marginBottom:4}}>📎</div>
               <div style={{fontSize:13,fontWeight:600}}>Clique ou arraste arquivos aqui</div>
-              <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>Até 5 arquivos · máx. {MAX_FILE_MB}MB cada</div>
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>Vários arquivos · máx. {MAX_FILE_MB}MB cada</div>
             </div>
             <input ref={fileInputRef} type="file" multiple onChange={e=>{handleFiles(e.target.files); e.target.value='';}} style={{display:'none'}} />
             {files.length > 0 && (
